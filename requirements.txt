@@ -1,0 +1,5 @@
+hindsight-client>=0.1.0
+groq>=0.9.0
+streamlit>=1.30.0
+python-dotenv>=1.0.0
+requests>=2.28.0
