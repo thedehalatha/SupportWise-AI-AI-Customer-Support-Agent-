@@ -142,7 +142,7 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
 # -----------------------------------------------------------------------------
-# SESSION STATE INITIALIZATION
+# SESSION STATE INITIALIZATION & ISOLATION MANAGEMENT
 # -----------------------------------------------------------------------------
 if "groq_api_key" not in st.session_state:
     st.session_state.groq_api_key = os.getenv("GROQ_API_KEY", "")
@@ -156,11 +156,15 @@ if "hindsight_base_url" not in st.session_state:
 if "selected_customer_id" not in st.session_state:
     st.session_state.selected_customer_id = "CUST-1001"
 
-if "messages" not in st.session_state:
+if "current_customer_id" not in st.session_state:
+    st.session_state.current_customer_id = st.session_state.selected_customer_id
+
+# Customer-keyed dictionaries for strict data isolation
+if "messages" not in st.session_state or not isinstance(st.session_state.messages, dict):
     st.session_state.messages = {}
 
-if "last_recalled_memories" not in st.session_state:
-    st.session_state.last_recalled_memories = []
+if "last_recalled_memories" not in st.session_state or not isinstance(st.session_state.last_recalled_memories, dict):
+    st.session_state.last_recalled_memories = {}
 
 # Helper to lazy-load managers
 @st.cache_resource
@@ -169,12 +173,6 @@ def get_hindsight_manager(api_key: str, base_url: str):
 
 memory_mgr = get_hindsight_manager(st.session_state.hindsight_api_key, st.session_state.hindsight_base_url)
 llm_mgr = GroqLLMManager(api_key=st.session_state.groq_api_key)
-
-
-# Ensure active customer chat history exists
-customer_id = st.session_state.selected_customer_id
-if customer_id not in st.session_state.messages:
-    st.session_state.messages[customer_id] = []
 
 
 # -----------------------------------------------------------------------------
@@ -191,20 +189,40 @@ with st.sidebar:
     st.subheader("👤 Select Customer")
     
     customer_options = list(DEMO_CUSTOMERS.keys()) + ["Custom ID..."]
+    current_cust = st.session_state.selected_customer_id
+    if current_cust in DEMO_CUSTOMERS:
+        default_index = customer_options.index(current_cust)
+    elif current_cust in customer_options:
+        default_index = customer_options.index(current_cust)
+    else:
+        default_index = customer_options.index("Custom ID...")
+
     selected_option = st.selectbox(
         "Choose Customer Profile:",
         options=customer_options,
-        format_func=lambda x: f"{DEMO_CUSTOMERS[x]['avatar']} {DEMO_CUSTOMERS[x]['name']} ({x})" if x in DEMO_CUSTOMERS else f"➕ {x}"
+        index=default_index,
+        format_func=lambda x: f"{DEMO_CUSTOMERS[x]['avatar']} {DEMO_CUSTOMERS[x]['name']} ({x})" if x in DEMO_CUSTOMERS else f"➕ {x}",
+        key="customer_select_box"
     )
 
     if selected_option == "Custom ID...":
-        custom_id = st.text_input("Enter Customer ID:", value="CUST-9999").strip().upper()
+        custom_id = st.text_input("Enter Customer ID:", value="CUST-9999", key="custom_customer_id_input").strip().upper()
         if custom_id:
             st.session_state.selected_customer_id = custom_id
     else:
         st.session_state.selected_customer_id = selected_option
 
     active_cust_id = st.session_state.selected_customer_id
+
+    # Handle Customer Change: When selected customer changes, isolate/load only active customer state
+    if st.session_state.current_customer_id != active_cust_id:
+        st.session_state.current_customer_id = active_cust_id
+
+    # Initialize customer-isolated state structures if not present
+    if active_cust_id not in st.session_state.messages:
+        st.session_state.messages[active_cust_id] = []
+    if active_cust_id not in st.session_state.last_recalled_memories:
+        st.session_state.last_recalled_memories[active_cust_id] = []
 
     # Display Customer Info Card
     if active_cust_id in DEMO_CUSTOMERS:
@@ -228,7 +246,7 @@ with st.sidebar:
 
     # Preload Demo Memories Button
     if active_cust_id in DEMO_CUSTOMERS:
-        if st.button("🚀 Preload Synthetic History", use_container_width=True, type="secondary"):
+        if st.button("🚀 Preload Synthetic History", use_container_width=True, type="secondary", key=f"preload_{active_cust_id}"):
             count = load_demo_customer_memories(active_cust_id, memory_mgr)
             st.success(f"Loaded {count} Hindsight memories for {active_cust_id}!")
             time.sleep(0.5)
@@ -241,18 +259,18 @@ with st.sidebar:
     
     col_btn1, col_btn2 = st.columns(2)
     with col_btn1:
-        if st.button("🔄 New Session", help="Clears chat messages but keeps Hindsight long-term memories intact!"):
+        if st.button("🔄 New Session", help="Clears chat messages but keeps Hindsight long-term memories intact!", key=f"new_session_{active_cust_id}"):
             st.session_state.messages[active_cust_id] = []
-            st.session_state.last_recalled_memories = []
-            st.success("Started new session. Long-term memory preserved!")
+            st.session_state.last_recalled_memories[active_cust_id] = []
+            st.success(f"Started new session for {active_cust_id}. Long-term memory preserved!")
             time.sleep(0.5)
             st.rerun()
 
     with col_btn2:
-        if st.button("🧹 Clear Memory", help="Wipes all stored Hindsight memories for this customer ID"):
+        if st.button("🧹 Clear Memory", help="Wipes all stored Hindsight memories for this customer ID", key=f"clear_mem_{active_cust_id}"):
             memory_mgr.clear_customer_memories(active_cust_id)
             st.session_state.messages[active_cust_id] = []
-            st.session_state.last_recalled_memories = []
+            st.session_state.last_recalled_memories[active_cust_id] = []
             st.warning(f"Cleared all memories for {active_cust_id}")
             time.sleep(0.5)
             st.rerun()
@@ -266,10 +284,10 @@ with st.sidebar:
         st.markdown(f"**Base URL:** `{status['base_url']}`")
         st.markdown(f"**Groq SDK:** `{'Configured' if llm_mgr.is_configured() else 'Fallback Mode'}`")
 
-        new_groq_key = st.text_input("Groq API Key:", value=st.session_state.groq_api_key, type="password")
-        new_hindsight_key = st.text_input("Hindsight API Key:", value=st.session_state.hindsight_api_key, type="password")
+        new_groq_key = st.text_input("Groq API Key:", value=st.session_state.groq_api_key, type="password", key="input_groq_key")
+        new_hindsight_key = st.text_input("Hindsight API Key:", value=st.session_state.hindsight_api_key, type="password", key="input_hindsight_key")
 
-        if st.button("Save API Keys"):
+        if st.button("Save API Keys", key="btn_save_keys"):
             st.session_state.groq_api_key = new_groq_key
             st.session_state.hindsight_api_key = new_hindsight_key
             st.cache_resource.clear()
@@ -305,23 +323,24 @@ st.markdown(f"""
 col_chat, col_recall = st.columns([2.2, 1.2])
 
 with col_chat:
-    st.subheader("💬 Live Support Conversation")
+    st.subheader(f"💬 Live Support Conversation ({active_cust_id})")
 
     # Display Preset Prompts for Quick Hackathon Demo
     if active_cust_id in DEMO_CUSTOMERS:
         st.markdown("**Quick Demo Scenarios (Click to test):**")
-        preset_cols = st.columns(len(DEMO_CUSTOMERS[active_cust_id]["preset_prompts"]))
+        preset_prompts = DEMO_CUSTOMERS[active_cust_id]["preset_prompts"]
+        preset_cols = st.columns(len(preset_prompts))
         preset_clicked = None
-        for idx, prompt_text in enumerate(DEMO_CUSTOMERS[active_cust_id]["preset_prompts"]):
+        for idx, prompt_text in enumerate(preset_prompts):
             with preset_cols[idx]:
-                if st.button(f"Option {idx+1}", help=prompt_text, key=f"preset_{idx}"):
+                if st.button(f"Option {idx+1}", help=prompt_text, key=f"preset_{active_cust_id}_{idx}"):
                     preset_clicked = prompt_text
 
-    # Display Chat History
+    # Display Chat History for active customer ONLY
     messages_to_show = st.session_state.messages.get(active_cust_id, [])
 
     if not messages_to_show:
-        st.info("👋 No conversation history for this session yet. Type a message below or use a quick demo scenario above to test!")
+        st.info(f"👋 No conversation history for session [{active_cust_id}]. Type a message below or use a quick demo scenario above to test!")
 
     for msg in messages_to_show:
         with st.chat_message(msg["role"]):
@@ -332,7 +351,7 @@ with col_chat:
                         st.markdown(f"- **[{m.get('type', 'Memory')}]**: {m.get('text')}")
 
     # Handle User Input
-    user_input = st.chat_input("Type your support issue or question here...")
+    user_input = st.chat_input(f"Type message for {active_cust_id}...")
 
     # If preset button was clicked, override user_input
     if 'preset_clicked' in locals() and preset_clicked:
@@ -341,23 +360,26 @@ with col_chat:
     if user_input:
         user_input = user_input.strip()
 
-        # 1. Append user message to chat history
+        # 1. Append user message to active customer's chat history ONLY
         st.session_state.messages[active_cust_id].append({"role": "user", "content": user_input})
         with st.chat_message("user"):
             st.markdown(user_input)
 
-        # 2. Retrieve Relevant Memories from Hindsight for this specific customer bank_id
-        with st.spinner("🧠 Querying Hindsight memory bank..."):
+        # 2. Retrieve Relevant Memories from Hindsight strictly for this customer bank_id
+        with st.spinner(f"🧠 Querying Hindsight memory bank for {active_cust_id}..."):
             recalled_memories = memory_mgr.recall(bank_id=active_cust_id, query=user_input, top_k=5)
-            st.session_state.last_recalled_memories = recalled_memories
+            st.session_state.last_recalled_memories[active_cust_id] = recalled_memories
 
-        # 3. Generate LLM Response using Groq LLM + Hindsight context
+        # 3. Generate LLM Response using Groq LLM + Hindsight context for active customer
         with st.spinner("⚡ Groq LLM synthesizing response with long-term memory..."):
+            # Explicitly load chat history strictly for the active customer ID only
+            active_customer_chat_history = st.session_state.messages.get(active_cust_id, [])[:-1]
+
             llm_result = llm_mgr.generate_response(
                 customer_id=active_cust_id,
                 user_query=user_input,
                 recalled_memories=recalled_memories,
-                chat_history=st.session_state.messages[active_cust_id][:-1]
+                chat_history=active_customer_chat_history
             )
             agent_response = llm_result["response"]
             extracted_memories = llm_result.get("extracted_memories", [])
@@ -370,8 +392,8 @@ with col_chat:
                     for m in recalled_memories:
                         st.markdown(f"- **[{m.get('type', 'Memory')}]**: {m.get('text')}")
 
-        # 5. Store extracted memories back into Hindsight for future sessions
-        with st.spinner("💾 Retaining new experiences into Hindsight memory..."):
+        # 5. Store extracted memories back into Hindsight for this customer ID ONLY
+        with st.spinner(f"💾 Retaining new experiences into Hindsight memory bank [{active_cust_id}]..."):
             for mem_text in extracted_memories:
                 memory_mgr.retain(
                     bank_id=active_cust_id,
@@ -380,7 +402,7 @@ with col_chat:
                     metadata={"query": user_input[:40]}
                 )
 
-        # Append assistant message to session state
+        # Append assistant message to active customer session state
         st.session_state.messages[active_cust_id].append({
             "role": "assistant",
             "content": agent_response,
@@ -394,12 +416,12 @@ with col_recall:
     st.subheader("🔍 Hindsight Memory Recall Panel")
 
     st.markdown("""
-    This panel displays the exact long-term memories retrieved from **Hindsight Vector Memory** for **{}**.
+    This panel displays memories retrieved from **Hindsight Vector Memory** strictly for customer **{}**.
     """.format(active_cust_id))
 
-    # Display Recently Recalled Memories
+    # Display Recently Recalled Memories for active customer ONLY
     st.markdown("#### 🧠 Memories Recalled for Last Query")
-    recalled_list = st.session_state.get("last_recalled_memories", [])
+    recalled_list = st.session_state.last_recalled_memories.get(active_cust_id, [])
 
     if recalled_list:
         for idx, mem in enumerate(recalled_list):
@@ -418,12 +440,12 @@ with col_recall:
             </div>
             """, unsafe_allow_html=True)
     else:
-        st.info("No memories recalled yet for the current prompt. Send a message to trigger TEMPR memory retrieval.")
+        st.info(f"No memories recalled yet for customer [{active_cust_id}] in this turn. Send a message to trigger memory retrieval.")
 
     st.markdown("---")
 
-    # Display Full Memory Bank Inspection
-    st.markdown("#### 📚 Full Customer Memory Bank")
+    # Display Full Memory Bank Inspection for active customer ONLY
+    st.markdown(f"#### 📚 Full Memory Bank ({active_cust_id})")
     with st.expander(f"Inspect All ({memory_count}) Stored Memories", expanded=True):
         if all_stored_memories:
             for mem in all_stored_memories:
@@ -431,4 +453,4 @@ with col_recall:
                 st.caption(f"ID: {mem.get('id')} | Stored: {mem.get('created_at')}")
                 st.markdown("---")
         else:
-            st.write("Memory bank is empty. Preload synthetic history or chat with the agent to populate memory.")
+            st.write(f"Memory bank for [{active_cust_id}] is empty. Preload synthetic history or chat with the agent to populate memory.")
