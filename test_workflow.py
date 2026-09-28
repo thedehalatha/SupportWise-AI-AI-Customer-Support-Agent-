@@ -1,6 +1,6 @@
 """
-Verification script for SupportWise AI workflow.
-Tests Hindsight memory retention, TEMPR retrieval, bank isolation, and LLM context synthesis.
+Automated Test Suite for SupportWise AI.
+Verifies Customer Data Isolation, Profile Switching, Session Resets, and Hindsight Memory Retrieval.
 """
 
 import sys
@@ -15,73 +15,115 @@ if sys.stdout.encoding != 'utf-8':
 
 from hindsight_helper import HindsightMemoryManager
 from llm_helper import GroqLLMManager
+from demo_data import load_demo_customer_memories, DEMO_CUSTOMERS
 
 
-def run_verification():
-    print("=" * 60)
-    print("[+] SUPPORTWISE AI - VERIFICATION TEST SUITE")
-    print("=" * 60)
+def run_isolation_tests():
+    print("=" * 70)
+    print("[+] SUPPORTWISE AI — CUSTOMER DATA ISOLATION TEST SUITE")
+    print("=" * 70)
 
-    # 1. Initialize Memory Manager
+    # 1. Initialize Memory Manager and LLM Manager
     memory_mgr = HindsightMemoryManager()
-    status = memory_mgr.get_status()
-    print(f"[1] Memory Manager initialized.")
-    print(f"    Mode: {status['mode'].upper()}")
-    print(f"    Base URL: {status['base_url']}")
-
-    # 2. Retain Memories for Customer 1001 (Sarah - Printer)
-    cust_1 = "CUST-1001"
-    print(f"\n[2] Storing memories for {cust_1} (Sarah Connor)...")
-    memory_mgr.retain(cust_1, "Customer owns HP OfficeJet Pro 9015e Printer.", "Experience")
-    memory_mgr.retain(cust_1, "Session #1: Wi-Fi disconnect issue after router reboot.", "Experience")
-    memory_mgr.retain(cust_1, "Session #1 Solution: Assigned Static IP 192.168.1.150 on Eero mesh router.", "Experience")
-
-    # 3. Retain Memories for Customer 1002 (David - Laptop Battery)
-    cust_2 = "CUST-1002"
-    print(f"\n[3] Storing memories for {cust_2} (David Miller)...")
-    memory_mgr.retain(cust_2, "Device: MacBook Pro 16-inch M2 Max.", "Experience")
-    memory_mgr.retain(cust_2, "Session #1: Battery draining 40% per hour due to WindowServer GPU spike.", "Experience")
-
-    # 4. Recall Memories for Customer 1001 on "The same problem happened again"
-    query = "The same problem happened again today."
-    print(f"\n[4] Querying Hindsight memory for {cust_1} with prompt: '{query}'")
-    recalled_1 = memory_mgr.recall(bank_id=cust_1, query=query, top_k=5)
-    
-    print(f"    Recalled {len(recalled_1)} memory fragments for {cust_1}:")
-    for r in recalled_1:
-        print(f"    - [{r.get('type')}] {r.get('text')} (Score: {r.get('score')})")
-
-    # Verify memory content correctness
-    recalled_text_concat = " ".join([m.get("text", "") for m in recalled_1])
-    assert "HP OfficeJet" in recalled_text_concat or "Wi-Fi" in recalled_text_concat, "Failed to recall printer memories!"
-    print("    [OK] Verification Passed: Hindsight successfully recalled HP printer & Wi-Fi context.")
-
-    # 5. Verify Memory Isolation between Customers
-    print(f"\n[5] Verifying Memory Isolation for {cust_2}...")
-    recalled_2 = memory_mgr.recall(bank_id=cust_2, query="What printer do I have?", top_k=5)
-    recalled_2_text = " ".join([m.get("text", "") for m in recalled_2])
-    assert "HP OfficeJet" not in recalled_2_text, "LEAK DETECTED: Customer 1002 accessed Customer 1001's memories!"
-    print("    [OK] Verification Passed: Customer 1002 memory bank is strictly isolated from Customer 1001.")
-
-    # 6. Test LLM Response Generation
-    print(f"\n[6] Testing LLM Response Generation...")
     llm_mgr = GroqLLMManager()
-    response_obj = llm_mgr.generate_response(
-        customer_id=cust_1,
-        user_query=query,
-        recalled_memories=recalled_1
+
+    # Clear pre-existing test memory banks to start fresh
+    memory_mgr.clear_customer_memories("CUST-1001")
+    memory_mgr.clear_customer_memories("CUST-1002")
+    memory_mgr.clear_customer_memories("CUST-1003")
+
+    # 2. Populate Synthetic Memories for Sarah (CUST-1001) and David (CUST-1002)
+    print("\n[STEP 1] Preloading memories for CUST-1001 (Sarah - HP Printer) and CUST-1002 (David - MacBook)...")
+    count_sarah = load_demo_customer_memories("CUST-1001", memory_mgr)
+    count_david = load_demo_customer_memories("CUST-1002", memory_mgr)
+
+    print(f"        Loaded {count_sarah} memories for CUST-1001.")
+    print(f"        Loaded {count_david} memories for CUST-1002.")
+
+    # 3. TEST 1: Ask David Miller (CUST-1002) "What printer do I have?"
+    print("\n[TEST 1] Querying David Miller (CUST-1002) with: 'What printer do I have?'")
+    cust_david = "CUST-1002"
+    query_printer = "What printer do I have?"
+    
+    # Recall memories strictly for CUST-1002
+    david_recalled = memory_mgr.recall(bank_id=cust_david, query=query_printer, top_k=5)
+    david_recalled_text = " ".join([m.get("text", "") for m in david_recalled])
+
+    print(f"        Recalled {len(david_recalled)} memories for {cust_david}:")
+    for m in david_recalled:
+        print(f"        - [{m.get('type')}] {m.get('text')}")
+
+    # Assert Hindsight recall returned NO printer info for David
+    assert "HP OfficeJet" not in david_recalled_text, "CRITICAL ERROR: Hindsight returned Sarah's HP printer memory for David!"
+    print("        ✅ Hindsight Recall Check Passed: ZERO printer memories returned for David.")
+
+    # Generate LLM response for David
+    response_david = llm_mgr.generate_response(
+        customer_id=cust_david,
+        user_query=query_printer,
+        recalled_memories=david_recalled
     )
+    david_resp_text = response_david["response"]
+    print("\n        --- Agent Response to David ---")
+    print("        " + david_resp_text.replace("\n", "\n        "))
+    print("        -------------------------------")
 
-    print(f"    Model Used: {response_obj['model_used']}")
-    print(f"    Response Output:\n    " + "-" * 50)
-    for line in response_obj["response"].split("\n"):
-        print(f"    {line}")
-    print("    " + "-" * 50)
+    # Assert response contains NO references to Sarah's printer or Eero router
+    assert "HP OfficeJet" not in david_resp_text, "CRITICAL BUG: Agent responded to David with Sarah's HP OfficeJet printer!"
+    assert "192.168.1.150" not in david_resp_text, "CRITICAL BUG: Agent responded to David with Sarah's Static IP!"
+    print("        ✅ Agent Response Check Passed: Response strictly contains NO data from Sarah Connor.")
 
-    print("\n" + "=" * 60)
-    print("[SUCCESS] ALL VERIFICATION TESTS PASSED SUCCESSFULLY!")
-    print("=" * 60)
+    # 4. TEST 2: Query Sarah Connor (CUST-1001) for printer issues
+    print("\n[TEST 2] Querying Sarah Connor (CUST-1001) with: 'What printer do I have?'")
+    cust_sarah = "CUST-1001"
+    sarah_recalled = memory_mgr.recall(bank_id=cust_sarah, query=query_printer, top_k=5)
+    sarah_recalled_text = " ".join([m.get("text", "") for m in sarah_recalled])
+
+    assert "HP OfficeJet" in sarah_recalled_text, "ERROR: Sarah's printer memory missing from Hindsight!"
+    print(f"        Recalled {len(sarah_recalled)} memories for {cust_sarah}.")
+    print("        ✅ Hindsight Recall Check Passed: HP OfficeJet Pro 9015e correctly recalled for Sarah.")
+
+    response_sarah = llm_mgr.generate_response(
+        customer_id=cust_sarah,
+        user_query=query_printer,
+        recalled_memories=sarah_recalled
+    )
+    sarah_resp_text = response_sarah["response"]
+    assert "HP OfficeJet" in sarah_resp_text, "ERROR: Sarah's response failed to cite her printer model!"
+    print("        ✅ Agent Response Check Passed: Sarah accurately received her HP OfficeJet printer details.")
+
+    # 5. TEST 3: Profile Switching & Memory Recall Panel Isolation
+    print("\n[TEST 3] Testing Profile Switching State Isolation...")
+    # Simulate session state mapping
+    session_messages = {
+        "CUST-1001": [{"role": "user", "content": "Printer query"}, {"role": "assistant", "content": sarah_resp_text}],
+        "CUST-1002": [{"role": "user", "content": "MacBook query"}, {"role": "assistant", "content": david_resp_text}]
+    }
+    session_recalled = {
+        "CUST-1001": sarah_recalled,
+        "CUST-1002": david_recalled
+    }
+
+    # Verify key isolation
+    assert "HP OfficeJet" in " ".join([m["text"] for m in session_recalled["CUST-1001"]])
+    assert "HP OfficeJet" not in " ".join([m["text"] for m in session_recalled["CUST-1002"]])
+    print("        ✅ Profile Switch Isolation Passed: session_recalled['CUST-1002'] is 100% free of CUST-1001 data.")
+
+    # 6. TEST 4: New Session Persistence Test
+    print("\n[TEST 4] Testing New Session (Clear Chat, Keep Memory) for CUST-1001...")
+    # Simulate new session: clear chat messages list for CUST-1001
+    session_messages["CUST-1001"] = []
+    
+    # Query Hindsight again after new session start
+    post_reset_recalled = memory_mgr.recall(bank_id=cust_sarah, query="The same problem happened again today.", top_k=5)
+    post_reset_text = " ".join([m["text"] for m in post_reset_recalled])
+    assert "HP OfficeJet" in post_reset_text, "ERROR: Memory lost after session reset!"
+    print("        ✅ New Session Persistence Passed: Hindsight retained Sarah's memories after session reset.")
+
+    print("\n" + "=" * 70)
+    print("🎉 ALL CUSTOMER DATA ISOLATION TESTS PASSED 100% SUCCESSFULLY!")
+    print("=" * 70)
 
 
 if __name__ == "__main__":
-    run_verification()
+    run_isolation_tests()

@@ -199,6 +199,10 @@ class HindsightMemoryManager:
                     })
                 return results[:top_k]
             except Exception as e:
+                err_msg = str(e)
+                if "404" in err_msg or "not found" in err_msg.lower():
+                    # Bank not populated on Cloud yet; return empty list gracefully
+                    return []
                 print(f"[Hindsight] Cloud recall error ({e}), recalling from local fallback...")
                 return self.local_store.recall(bank_id, query, top_k)
         else:
@@ -208,10 +212,34 @@ class HindsightMemoryManager:
         """
         Get all stored memories for visual inspection in the UI panel.
         """
+        if self.mode == "cloud" and self.client:
+            try:
+                res = self.client.list_memories(bank_id=bank_id)
+                items = getattr(res, "items", []) or []
+                results = []
+                for item in items:
+                    results.append({
+                        "id": getattr(item, "id", ""),
+                        "text": getattr(item, "text", ""),
+                        "type": getattr(item, "fact_type", getattr(item, "type", "Experience")),
+                        "created_at": str(getattr(item, "updated_at", getattr(item, "var_date", ""))),
+                        "metadata": getattr(item, "metadata", {})
+                    })
+                return results
+            except Exception as e:
+                err_msg = str(e)
+                if "404" in err_msg or "not found" in err_msg.lower():
+                    return []
+                return self.local_store.get_all(bank_id)
         return self.local_store.get_all(bank_id)
 
     def clear_customer_memories(self, bank_id: str):
         """
         Clear memories for a specific bank ID if requested.
         """
+        if self.mode == "cloud" and self.client:
+            try:
+                self.client.delete_bank(bank_id=bank_id)
+            except Exception as e:
+                print(f"[Hindsight] Cloud delete_bank notice: {e}")
         self.local_store.clear_bank(bank_id)

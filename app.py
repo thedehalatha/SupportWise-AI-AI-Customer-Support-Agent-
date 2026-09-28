@@ -179,9 +179,17 @@ llm_mgr = GroqLLMManager(api_key=st.session_state.groq_api_key)
 # SIDEBAR NAVIGATION & METADATA
 # -----------------------------------------------------------------------------
 with st.sidebar:
-    st.image("https://img.icons8.com/isometric-folders/100/brain.png", width=64)
-    st.title("SupportWise AI")
-    st.caption("AI Support Agent with Hindsight Memory")
+    st.markdown("""
+    <div style="display: flex; align-items: center; gap: 12px; padding: 4px 0 12px 0;">
+        <div style="background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%); width: 44px; height: 44px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 22px; box-shadow: 0 4px 14px rgba(139, 92, 246, 0.35); flex-shrink: 0;">
+            🧠
+        </div>
+        <div>
+            <h2 style="margin: 0; font-size: 1.35rem; font-weight: 800; background: linear-gradient(90deg, #c084fc, #818cf8); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">SupportWise AI</h2>
+            <span style="font-size: 0.76rem; color: #94a3b8; font-weight: 500;">Hindsight Long-Term Memory</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
     
     st.markdown("---")
     
@@ -325,16 +333,26 @@ col_chat, col_recall = st.columns([2.2, 1.2])
 with col_chat:
     st.subheader(f"💬 Live Support Conversation ({active_cust_id})")
 
-    # Display Preset Prompts for Quick Hackathon Demo
+    # Display Preset Demo Scenarios for Quick Hackathon Demo
     if active_cust_id in DEMO_CUSTOMERS:
-        st.markdown("**Quick Demo Scenarios (Click to test):**")
-        preset_prompts = DEMO_CUSTOMERS[active_cust_id]["preset_prompts"]
-        preset_cols = st.columns(len(preset_prompts))
+        st.markdown("**⚡ Quick Demo Scenarios (Click to test):**")
+        cust_demo = DEMO_CUSTOMERS[active_cust_id]
+        scenarios = cust_demo.get("preset_scenarios", [])
+        if not scenarios and "preset_prompts" in cust_demo:
+            default_labels = ["Printer Wi-Fi Issue", "Laptop Battery Issue", "Previous Ticket Follow-up"]
+            scenarios = [
+                {"label": default_labels[i] if i < len(default_labels) else f"Scenario {i+1}", "prompt": p}
+                for i, p in enumerate(cust_demo["preset_prompts"])
+            ]
+        
+        preset_cols = st.columns(len(scenarios))
         preset_clicked = None
-        for idx, prompt_text in enumerate(preset_prompts):
+        for idx, item in enumerate(scenarios):
+            lbl = item.get("label", f"Scenario {idx+1}")
+            p_text = item.get("prompt", "")
             with preset_cols[idx]:
-                if st.button(f"Option {idx+1}", help=prompt_text, key=f"preset_{active_cust_id}_{idx}"):
-                    preset_clicked = prompt_text
+                if st.button(lbl, help=p_text, use_container_width=True, key=f"preset_{active_cust_id}_{idx}"):
+                    preset_clicked = p_text
 
     # Display Chat History for active customer ONLY
     messages_to_show = st.session_state.messages.get(active_cust_id, [])
@@ -412,26 +430,37 @@ with col_chat:
         st.rerun()
 
 
+def _clean_mem_text(raw_text: str) -> str:
+    if not raw_text:
+        return ""
+    if " | Involving:" in raw_text:
+        raw_text = raw_text.split(" | Involving:")[0]
+    return raw_text.strip()
+
+
 with col_recall:
     st.subheader("🔍 Hindsight Memory Recall Panel")
 
-    st.markdown("""
-    This panel displays memories retrieved from **Hindsight Vector Memory** strictly for customer **{}**.
-    """.format(active_cust_id))
+    st.caption(f"Real-time vector memory retrieval strictly isolated for customer **{active_cust_id}**")
 
     # Display Recently Recalled Memories for active customer ONLY
     st.markdown("#### 🧠 Memories Recalled for Last Query")
     recalled_list = st.session_state.last_recalled_memories.get(active_cust_id, [])
 
     if recalled_list:
-        for idx, mem in enumerate(recalled_list):
-            m_type = mem.get("type", "Experience")
-            m_text = mem.get("text", "")
-            m_score = mem.get("score", 0.9)
+        seen_recalled = set()
+        clean_recalled = []
+        for mem in recalled_list:
+            c_text = _clean_mem_text(mem.get("text", ""))
+            if c_text and c_text not in seen_recalled:
+                seen_recalled.add(c_text)
+                clean_recalled.append((c_text, mem.get("type", "Experience"), mem.get("score", 0.95)))
+
+        for idx, (m_text, m_type, m_score) in enumerate(clean_recalled):
             st.markdown(f"""
             <div class="memory-panel">
                 <div class="memory-panel-title">
-                    <span>📌 Fragment #{idx+1} • {m_type}</span>
+                    <span>📌 Memory Fragment #{idx+1} • {m_type}</span>
                     <span style="font-size:0.75rem; color:#a78bfa; margin-left:auto;">Relevance: {m_score}</span>
                 </div>
                 <div class="memory-item">
@@ -440,17 +469,33 @@ with col_recall:
             </div>
             """, unsafe_allow_html=True)
     else:
-        st.info(f"No memories recalled yet for customer [{active_cust_id}] in this turn. Send a message to trigger memory retrieval.")
+        st.info(f"No memories recalled yet for [{active_cust_id}] in this turn. Click a scenario or type a message to trigger vector recall.")
 
     st.markdown("---")
 
     # Display Full Memory Bank Inspection for active customer ONLY
-    st.markdown(f"#### 📚 Full Memory Bank ({active_cust_id})")
-    with st.expander(f"Inspect All ({memory_count}) Stored Memories", expanded=True):
-        if all_stored_memories:
-            for mem in all_stored_memories:
-                st.markdown(f"• **[{mem.get('type')}]** {mem.get('text')}")
-                st.caption(f"ID: {mem.get('id')} | Stored: {mem.get('created_at')}")
-                st.markdown("---")
-        else:
+    st.markdown(f"#### 📚 Stored Memory Bank ({active_cust_id})")
+    
+    if all_stored_memories:
+        seen_bank_texts = set()
+        clean_bank_memories = []
+        for mem in all_stored_memories:
+            c_text = _clean_mem_text(mem.get("text", ""))
+            if c_text and c_text not in seen_bank_texts:
+                seen_bank_texts.add(c_text)
+                clean_bank_memories.append({
+                    "text": c_text,
+                    "type": mem.get("type", "Experience")
+                })
+
+        with st.expander(f"Inspect Stored Memories ({len(clean_bank_memories)} unique items)", expanded=True):
+            for m in clean_bank_memories:
+                st.markdown(f"""
+                <div style="background: rgba(30, 41, 59, 0.5); border-left: 3px solid #818cf8; padding: 8px 12px; border-radius: 6px; margin-bottom: 8px; font-size: 0.88rem; color: #f1f5f9;">
+                    <span style="background: rgba(129, 140, 248, 0.2); color: #c084fc; font-weight: 600; padding: 2px 6px; border-radius: 4px; font-size: 0.75rem; margin-right: 6px;">{m['type']}</span>
+                    {m['text']}
+                </div>
+                """, unsafe_allow_html=True)
+    else:
+        with st.expander(f"Inspect Memory Bank (0 items)", expanded=True):
             st.write(f"Memory bank for [{active_cust_id}] is empty. Preload synthetic history or chat with the agent to populate memory.")
